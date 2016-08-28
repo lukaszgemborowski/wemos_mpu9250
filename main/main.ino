@@ -56,6 +56,14 @@ void mpu9250_verify()
   }
 }
 
+void mpu9250_setup()
+{
+  mpu9250_reset();
+  i2c_write_reg(MPU9250_ADDRESS_MAIN, MPU9250_REG_PWR_MGMT_1, 1);
+  i2c_write_reg(MPU9250_ADDRESS_MAIN, MPU9250_REG_CONFIG, 3);
+  i2c_write_reg(MPU9250_ADDRESS_MAIN, MPU9250_REG_GYRO_CONFIG, gyro_mode << 3);
+}
+
 void setup()
 {
   Serial.begin(115200);
@@ -66,18 +74,8 @@ void setup()
   Wire.begin();
   delay(100);
 
-  // 1. verification & reset device
   mpu9250_verify();
-  mpu9250_reset();
-
-  // 2. wake-up device, auto-select clock source
-  i2c_write_reg(MPU9250_ADDRESS_MAIN, MPU9250_REG_PWR_MGMT_1, 1);
-
-  // 3. set configuration register to known value
-  i2c_write_reg(MPU9250_ADDRESS_MAIN, MPU9250_REG_CONFIG, 3);
-
-  // 4. configure gyro
-  i2c_write_reg(MPU9250_ADDRESS_MAIN, MPU9250_REG_GYRO_CONFIG, gyro_mode << 3);
+  mpu9250_setup();
 
   Serial.println("Gyro configured...");
   delay(100);
