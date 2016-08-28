@@ -64,6 +64,10 @@ void mpu9250_setup()
   i2c_write_reg(MPU9250_ADDRESS_MAIN, MPU9250_REG_GYRO_CONFIG, gyro_mode << 3);
 }
 
+void mpu9250_calibrate()
+{
+}
+
 void setup()
 {
   Serial.begin(115200);
@@ -74,10 +78,15 @@ void setup()
   Wire.begin();
   delay(100);
 
+  Serial.println("Checking device ID...");
   mpu9250_verify();
+
+  Serial.println("Calibrating device...");
+  mpu9250_calibrate();
+
+  Serial.println("Setting up device...");
   mpu9250_setup();
 
-  Serial.println("Gyro configured...");
   delay(100);
 
   Serial.println("Starting measurements...");
