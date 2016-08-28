@@ -7,10 +7,17 @@
 #define MPU9250_REG_WHO_AM_I_DEFAULT 0x71
 
 #define MPU9250_REG_PWR_MGMT_1       0x6B
+#define MPU9250_REG_PWR_MGMT_2       0x6C
 #define MPU9250_REG_CONFIG           0x1A
 #define MPU9250_REG_GYRO_CONFIG      0x1B
 
 #define MPU9250_REG_GYRO_XOUT_H      0x43
+#define MPU9250_REG_FIFO_EN          0x23
+#define MPU9250_REG_USER_CTRL        0x6A
+#define MPU9250_REG_SMPLRT_DIV       0x19
+
+#define MPU9250_REG_FIFO_COUNTH      0x72
+#define MPU9250_REG_FIFO_R_W         0x74
 
 enum GyroMode {
   GyroMode_250dps = 0,
@@ -23,6 +30,7 @@ enum GyroMode {
 uint8_t i2c_read_reg(uint8_t address, uint8_t reg);
 void i2c_write_reg(uint8_t address, uint8_t reg, uint8_t value);
 void i2c_read_range(uint8_t address, uint8_t reg_base, uint8_t count, uint8_t *dest);
+int16_t i2c_read_int16(uint8_t address, uint8_t reg);
 
 /* state global variables, should be turned into a class instance */
 GyroMode gyro_mode = GyroMode_1000dps;
@@ -60,12 +68,47 @@ void mpu9250_setup()
 {
   mpu9250_reset();
   i2c_write_reg(MPU9250_ADDRESS_MAIN, MPU9250_REG_PWR_MGMT_1, 1);
+  i2c_write_reg(MPU9250_ADDRESS_MAIN, MPU9250_REG_PWR_MGMT_2, 7 << 3); // enable only gyro
   i2c_write_reg(MPU9250_ADDRESS_MAIN, MPU9250_REG_CONFIG, 3);
   i2c_write_reg(MPU9250_ADDRESS_MAIN, MPU9250_REG_GYRO_CONFIG, gyro_mode << 3);
 }
 
 void mpu9250_calibrate()
 {
+  mpu9250_reset();
+  i2c_write_reg(MPU9250_ADDRESS_MAIN, MPU9250_REG_PWR_MGMT_1, 1);
+  i2c_write_reg(MPU9250_ADDRESS_MAIN, MPU9250_REG_PWR_MGMT_2, 7 << 3); // enable only gyro
+  i2c_write_reg(MPU9250_ADDRESS_MAIN, MPU9250_REG_CONFIG, 1);
+  i2c_write_reg(MPU9250_ADDRESS_MAIN, MPU9250_REG_SMPLRT_DIV, 0);
+  i2c_write_reg(MPU9250_ADDRESS_MAIN, MPU9250_REG_GYRO_CONFIG, GyroMode_250dps << 3);
+  i2c_write_reg(MPU9250_ADDRESS_MAIN, MPU9250_REG_FIFO_EN, 0x70); // enable FIFO for gyro X, Y, Z
+  i2c_write_reg(MPU9250_ADDRESS_MAIN, MPU9250_REG_USER_CTRL, 0x24); // reset FIFO
+
+  delay(50); // collect samples
+
+  i2c_write_reg(MPU9250_ADDRESS_MAIN, MPU9250_REG_FIFO_EN, 0); // disable FIFO
+
+  int16_t fifo_size = i2c_read_int16(MPU9250_ADDRESS_MAIN, MPU9250_REG_FIFO_COUNTH); // read FIFO sample count
+
+  Serial.print("calibration: samples from FIFO: "); Serial.println(fifo_size, DEC);
+
+  uint8_t data[6];
+
+  for (int i = 0; i < fifo_size/6; i ++)
+  {
+    float gyro[3];
+
+    i2c_read_range(MPU9250_ADDRESS_MAIN, MPU9250_REG_FIFO_R_W, 6, data);
+
+    //Serial.print(i, DEC); Serial.print(": ");
+    gyro[0] = ((int16_t) (((int16_t)data[0] << 8) | data[1] )) * gyro_coefficients[GyroMode_250dps];
+    gyro[1] = ((int16_t) (((int16_t)data[1] << 8) | data[2] )) * gyro_coefficients[GyroMode_250dps];
+    gyro[2] = ((int16_t) (((int16_t)data[3] << 8) | data[4] )) * gyro_coefficients[GyroMode_250dps];
+
+    //Serial.print(gyro[0]); Serial.print(" ");
+    //Serial.print(gyro[1]); Serial.print(" ");
+    //Serial.print(gyro[2]); Serial.println("");
+  }
 }
 
 void setup()
@@ -127,6 +170,22 @@ void i2c_write_reg(uint8_t address, uint8_t reg, uint8_t value)
   Wire.write(reg);
   Wire.write(value);
   Wire.endTransmission();
+}
+
+int16_t i2c_read_int16(uint8_t address, uint8_t reg)
+{
+  uint8_t data[2];
+  int16_t result;
+  Wire.beginTransmission(address);
+  Wire.write(reg);
+  Wire.endTransmission(false);
+  Wire.requestFrom(address, (uint8_t)2);
+  data[0] = Wire.read();
+  data[1] = Wire.read();
+
+  result = ((uint16_t)data[0] << 8) | data[1];
+  
+  return result;
 }
 
 void i2c_read_range(uint8_t address, uint8_t reg_base, uint8_t count, uint8_t *dest)
