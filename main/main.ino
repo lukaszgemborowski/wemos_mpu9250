@@ -1,4 +1,9 @@
 #include <Wire.h>
+#include <ESP8266WiFi.h>
+#include <WiFiUdp.h>
+
+const char* ssid     = "...";
+const char* password = "...";
 
 #define MPU9250_ADDRESS_MAIN 0x68
 #define MPU9250_ADDRESS_MAG  0x0C
@@ -35,7 +40,7 @@ void i2c_read_range(uint8_t address, uint8_t reg_base, uint8_t count, uint8_t *d
 int16_t i2c_read_int16(uint8_t address, uint8_t reg);
 
 /* state global variables, should be turned into a class instance */
-GyroMode gyro_mode = GyroMode_1000dps;
+GyroMode gyro_mode = GyroMode_250dps;
 
 /* stolen from some open source project :-) (beerware, remember to buy author a beer) 
  * https://github.com/kriswiner/MPU-9250/blob/master/MPU9250BasicAHRS.ino */
@@ -67,12 +72,17 @@ void mpu9250_verify()
   }
 }
 
+const float KILO_DIVIDER = 50;
+
 void mpu9250_setup()
 {
   i2c_write_reg(MPU9250_ADDRESS_MAIN, MPU9250_REG_PWR_MGMT_1, 1);
   i2c_write_reg(MPU9250_ADDRESS_MAIN, MPU9250_REG_PWR_MGMT_2, 7 << 3); // enable only gyro
   i2c_write_reg(MPU9250_ADDRESS_MAIN, MPU9250_REG_CONFIG, 3);
   i2c_write_reg(MPU9250_ADDRESS_MAIN, MPU9250_REG_GYRO_CONFIG, gyro_mode << 3);
+  i2c_write_reg(MPU9250_ADDRESS_MAIN, MPU9250_REG_SMPLRT_DIV, KILO_DIVIDER);
+  i2c_write_reg(MPU9250_ADDRESS_MAIN, MPU9250_REG_FIFO_EN, 0x70); // enable FIFO for gyro X, Y, Z
+  i2c_write_reg(MPU9250_ADDRESS_MAIN, MPU9250_REG_USER_CTRL, 0x44); // reset FIFO and enable FIFO
 }
 
 void mpu9250_calibrate()
@@ -83,48 +93,91 @@ void mpu9250_calibrate()
   i2c_write_reg(MPU9250_ADDRESS_MAIN, MPU9250_REG_CONFIG, 1); // Bandwidth 184Hz, delay 2.9ms, Fs 1Khz
   i2c_write_reg(MPU9250_ADDRESS_MAIN, MPU9250_REG_SMPLRT_DIV, 0);
   i2c_write_reg(MPU9250_ADDRESS_MAIN, MPU9250_REG_GYRO_CONFIG, GyroMode_250dps << 3);
-  i2c_write_reg(MPU9250_ADDRESS_MAIN, MPU9250_REG_FIFO_EN, 0x70); // enable FIFO for gyro X, Y, Z
 
-  i2c_write_reg(MPU9250_ADDRESS_MAIN, MPU9250_REG_USER_CTRL, 0x44); // reset FIFO and enable FIFO
+  int32_t last_avarage[3] = {0};
+
+  for (int k = 0; k < 10; k ++)
+  {
+    i2c_write_reg(MPU9250_ADDRESS_MAIN, MPU9250_REG_FIFO_EN, 0x70); // enable FIFO for gyro X, Y, Z
+    i2c_write_reg(MPU9250_ADDRESS_MAIN, MPU9250_REG_USER_CTRL, 0x44);
+    delay(100); // collect samples  
+    i2c_write_reg(MPU9250_ADDRESS_MAIN, MPU9250_REG_FIFO_EN, 0); // disable FIFO
   
+    int32_t fifo_size = i2c_read_int16(MPU9250_ADDRESS_MAIN, MPU9250_REG_FIFO_COUNTH)/6; // read FIFO sample count
+  
+    Serial.print("calibration: samples from FIFO: "); Serial.println(fifo_size, DEC);
+  
+    uint8_t data[6];
+    int32_t avarage[3] = {0};
+    
+    for (int i = 0; i < fifo_size; i ++)
+    {
+      i2c_read_range(MPU9250_ADDRESS_MAIN, MPU9250_REG_FIFO_R_W, 6, data);
+  
+      avarage[0] += (int16_t)(((int16_t)data[0] << 8) | data[1] );
+      avarage[1] += (int16_t)(((int16_t)data[2] << 8) | data[3] );
+      avarage[2] += (int16_t)(((int16_t)data[4] << 8) | data[5] );
+    }
+ 
+    avarage[0] = (avarage[0]/fifo_size/4.f);
+    avarage[1] = (avarage[1]/fifo_size/4.f);
+    avarage[2] = (avarage[2]/fifo_size/4.f);
 
-  delay(100); // collect samples
+    Serial.print("Avarages         : ");
+    for (int a = 0; a < 3; a ++) {
+      Serial.print(avarage[a]);
+      Serial.print(", ");
+    }
+    Serial.println();
 
-  i2c_write_reg(MPU9250_ADDRESS_MAIN, MPU9250_REG_FIFO_EN, 0); // disable FIFO
+    avarage[0] += last_avarage[0];
+    avarage[1] += last_avarage[1];
+    avarage[2] += last_avarage[2];
 
-  int32_t fifo_size = i2c_read_int16(MPU9250_ADDRESS_MAIN, MPU9250_REG_FIFO_COUNTH)/6; // read FIFO sample count
+    Serial.print("Corrected Avarages: ");
+    for (int a = 0; a < 3; a ++) {
+      Serial.print(avarage[a]);
+      Serial.print(", ");
+    }
 
-  Serial.print("calibration: samples from FIFO: "); Serial.println(fifo_size, DEC);
+    Serial.println();
 
-  uint8_t data[6];
-  int32_t avarage[3] = {0};
+    last_avarage[0] = avarage[0];
+    last_avarage[1] = avarage[1];
+    last_avarage[2] = avarage[2];
+  
+    /* I have no idea why this order.. - to be checked with spec */
+    data[0] = (-avarage[1] >> 8) & 0xff;
+    data[1] = (-avarage[1]     ) & 0xff;
+    data[2] = (-avarage[2] >> 8) & 0xff;
+    data[3] = (-avarage[2]     ) & 0xff;
+    data[4] = (-avarage[0] >> 8) & 0xff;
+    data[5] = (-avarage[0]     ) & 0xff;
+  
+    /* apply offsets */
+    for (int i = 0; i < 6; i ++)
+    {
+      i2c_write_reg(MPU9250_ADDRESS_MAIN, MPU9250_REG_GYRO_OFFS_USR + i, data[i]);
+    }
+  }
+}
 
-  for (int i = 0; i < fifo_size; i ++)
-  {
-    i2c_read_range(MPU9250_ADDRESS_MAIN, MPU9250_REG_FIFO_R_W, 6, data);
-
-    avarage[0] += (int16_t)(((int16_t)data[0] << 8) | data[1] );
-    avarage[1] += (int16_t)(((int16_t)data[2] << 8) | data[3] );
-    avarage[2] += (int16_t)(((int16_t)data[4] << 8) | data[5] );
+void wifi_connect()
+{
+  Serial.print("Connecting to SSID: ");
+  Serial.println(ssid);
+  
+  WiFi.begin(ssid, password);
+  
+  while (WiFi.status() != WL_CONNECTED) {
+    delay(500);
+    Serial.print(".");
   }
 
-  avarage[0] = avarage[0]/fifo_size/4.f;
-  avarage[1] = avarage[1]/fifo_size/4.f;
-  avarage[2] = avarage[2]/fifo_size/4.f;
-
-  /* I have no idea why this order.. - to be checked with spec */
-  data[0] = (-avarage[1] >> 8) & 0xff;
-  data[1] = (-avarage[1]     ) & 0xff;
-  data[2] = (-avarage[2] >> 8) & 0xff;
-  data[3] = (-avarage[2]     ) & 0xff;
-  data[4] = (-avarage[0] >> 8) & 0xff;
-  data[5] = (-avarage[0]     ) & 0xff;
-
-  /* apply offsets */
-  for (int i = 0; i < 6; i ++)
-  {
-    i2c_write_reg(MPU9250_ADDRESS_MAIN, MPU9250_REG_GYRO_OFFS_USR + i, data[i]);
-  }
+  Serial.println("");
+  Serial.print("WiFi connected, ");  
+  Serial.println("IP address: ");
+  Serial.println(WiFi.localIP());
 }
 
 void setup()
@@ -146,6 +199,8 @@ void setup()
   Serial.println("Setting up device...");
   mpu9250_setup();
 
+  wifi_connect();
+
   delay(100);
 
   Serial.println("Starting measurements...");
@@ -153,18 +208,44 @@ void setup()
 
 void loop()
 {
-  // fetch gyro data
-  uint8_t rawData[6];
-  i2c_read_range(MPU9250_ADDRESS_MAIN, MPU9250_REG_GYRO_XOUT_H, 6, &rawData[0]);
-  int16_t gyro_x = ((int16_t)rawData[0] << 8) | rawData[1];
-  int16_t gyro_y = ((int16_t)rawData[2] << 8) | rawData[3];
-  int16_t gyro_z = ((int16_t)rawData[4] << 8) | rawData[5];
+  static float gyro[3] = {0.f};
 
-  Serial.print(gyro_x * gyro_coefficients[gyro_mode]);
-  Serial.print(" ");
-  Serial.print(gyro_y * gyro_coefficients[gyro_mode]);
-  Serial.print(" ");
-  Serial.println(gyro_z * gyro_coefficients[gyro_mode]);
+  int32_t fifo_size = i2c_read_int16(MPU9250_ADDRESS_MAIN, MPU9250_REG_FIFO_COUNTH)/6; // read FIFO sample count
+
+  for (int i = 0; i < fifo_size; i ++)
+  {
+    uint8_t data[6];
+    i2c_read_range(MPU9250_ADDRESS_MAIN, MPU9250_REG_FIFO_R_W, 6, data);
+
+    float gx = (int16_t)(((int16_t)data[0] << 8) | data[1]) * gyro_coefficients[gyro_mode];
+    float gy = (int16_t)(((int16_t)data[2] << 8) | data[3]) * gyro_coefficients[gyro_mode];
+    float gz = (int16_t)(((int16_t)data[4] << 8) | data[5]) * gyro_coefficients[gyro_mode];
+
+    gyro[0] += gx / (1000.f / KILO_DIVIDER);
+    gyro[1] += gy / (1000.f / KILO_DIVIDER);
+    gyro[2] += gz / (1000.f / KILO_DIVIDER);
+  }
+
+  // send data
+#pragma pack(push, 1)
+  struct {
+        uint8_t pad1;
+        uint8_t flags;
+        float fl[12];
+    } data;
+#pragma pack(pop)
+
+  static float fl = 0.f;
+  data.flags = 3;
+
+  for (int i = 0; i < 3; i ++) {
+    data.fl[0 + i] = data.fl[9 + i] = gyro[i] * 0.0174532925;
+  }
+
+  WiFiUDP udp;
+  udp.beginPacket(IPAddress(192, 168, 0, 102), 5555);
+  udp.write((const uint8_t *)&data, sizeof(data));
+  udp.endPacket();
 
   delay(1000);
 }
