@@ -19,6 +19,8 @@
 #define MPU9250_REG_FIFO_COUNTH      0x72
 #define MPU9250_REG_FIFO_R_W         0x74
 
+#define MPU9250_REG_GYRO_OFFS_USR    0x13
+
 enum GyroMode {
   GyroMode_250dps = 0,
   GyroMode_500dps,
@@ -47,6 +49,7 @@ const float gyro_coefficients[4] = {
 void mpu9250_reset()
 {
   i2c_write_reg(MPU9250_ADDRESS_MAIN, MPU9250_REG_PWR_MGMT_1, 0x80);
+  delay(100);
 }
 
 void mpu9250_verify()
@@ -66,7 +69,6 @@ void mpu9250_verify()
 
 void mpu9250_setup()
 {
-  mpu9250_reset();
   i2c_write_reg(MPU9250_ADDRESS_MAIN, MPU9250_REG_PWR_MGMT_1, 1);
   i2c_write_reg(MPU9250_ADDRESS_MAIN, MPU9250_REG_PWR_MGMT_2, 7 << 3); // enable only gyro
   i2c_write_reg(MPU9250_ADDRESS_MAIN, MPU9250_REG_CONFIG, 3);
@@ -77,37 +79,51 @@ void mpu9250_calibrate()
 {
   mpu9250_reset();
   i2c_write_reg(MPU9250_ADDRESS_MAIN, MPU9250_REG_PWR_MGMT_1, 1);
-  i2c_write_reg(MPU9250_ADDRESS_MAIN, MPU9250_REG_PWR_MGMT_2, 7 << 3); // enable only gyro
-  i2c_write_reg(MPU9250_ADDRESS_MAIN, MPU9250_REG_CONFIG, 1);
+  i2c_write_reg(MPU9250_ADDRESS_MAIN, MPU9250_REG_PWR_MGMT_2, 7 << 3); // disable accelerometer
+  i2c_write_reg(MPU9250_ADDRESS_MAIN, MPU9250_REG_CONFIG, 1); // Bandwidth 184Hz, delay 2.9ms, Fs 1Khz
   i2c_write_reg(MPU9250_ADDRESS_MAIN, MPU9250_REG_SMPLRT_DIV, 0);
   i2c_write_reg(MPU9250_ADDRESS_MAIN, MPU9250_REG_GYRO_CONFIG, GyroMode_250dps << 3);
   i2c_write_reg(MPU9250_ADDRESS_MAIN, MPU9250_REG_FIFO_EN, 0x70); // enable FIFO for gyro X, Y, Z
-  i2c_write_reg(MPU9250_ADDRESS_MAIN, MPU9250_REG_USER_CTRL, 0x24); // reset FIFO
 
-  delay(50); // collect samples
+  i2c_write_reg(MPU9250_ADDRESS_MAIN, MPU9250_REG_USER_CTRL, 0x44); // reset FIFO and enable FIFO
+  
+
+  delay(100); // collect samples
 
   i2c_write_reg(MPU9250_ADDRESS_MAIN, MPU9250_REG_FIFO_EN, 0); // disable FIFO
 
-  int16_t fifo_size = i2c_read_int16(MPU9250_ADDRESS_MAIN, MPU9250_REG_FIFO_COUNTH); // read FIFO sample count
+  int32_t fifo_size = i2c_read_int16(MPU9250_ADDRESS_MAIN, MPU9250_REG_FIFO_COUNTH)/6; // read FIFO sample count
 
   Serial.print("calibration: samples from FIFO: "); Serial.println(fifo_size, DEC);
 
   uint8_t data[6];
+  int32_t avarage[3] = {0};
 
-  for (int i = 0; i < fifo_size/6; i ++)
+  for (int i = 0; i < fifo_size; i ++)
   {
-    float gyro[3];
-
     i2c_read_range(MPU9250_ADDRESS_MAIN, MPU9250_REG_FIFO_R_W, 6, data);
 
-    //Serial.print(i, DEC); Serial.print(": ");
-    gyro[0] = ((int16_t) (((int16_t)data[0] << 8) | data[1] )) * gyro_coefficients[GyroMode_250dps];
-    gyro[1] = ((int16_t) (((int16_t)data[1] << 8) | data[2] )) * gyro_coefficients[GyroMode_250dps];
-    gyro[2] = ((int16_t) (((int16_t)data[3] << 8) | data[4] )) * gyro_coefficients[GyroMode_250dps];
+    avarage[0] += (int16_t)(((int16_t)data[0] << 8) | data[1] );
+    avarage[1] += (int16_t)(((int16_t)data[2] << 8) | data[3] );
+    avarage[2] += (int16_t)(((int16_t)data[4] << 8) | data[5] );
+  }
 
-    //Serial.print(gyro[0]); Serial.print(" ");
-    //Serial.print(gyro[1]); Serial.print(" ");
-    //Serial.print(gyro[2]); Serial.println("");
+  avarage[0] = avarage[0]/fifo_size/4.f;
+  avarage[1] = avarage[1]/fifo_size/4.f;
+  avarage[2] = avarage[2]/fifo_size/4.f;
+
+  /* I have no idea why this order.. - to be checked with spec */
+  data[0] = (-avarage[1] >> 8) & 0xff;
+  data[1] = (-avarage[1]     ) & 0xff;
+  data[2] = (-avarage[2] >> 8) & 0xff;
+  data[3] = (-avarage[2]     ) & 0xff;
+  data[4] = (-avarage[0] >> 8) & 0xff;
+  data[5] = (-avarage[0]     ) & 0xff;
+
+  /* apply offsets */
+  for (int i = 0; i < 6; i ++)
+  {
+    i2c_write_reg(MPU9250_ADDRESS_MAIN, MPU9250_REG_GYRO_OFFS_USR + i, data[i]);
   }
 }
 
@@ -150,7 +166,7 @@ void loop()
   Serial.print(" ");
   Serial.println(gyro_z * gyro_coefficients[gyro_mode]);
 
-  delay(100);
+  delay(1000);
 }
 
 uint8_t i2c_read_reg(uint8_t address, uint8_t reg)
