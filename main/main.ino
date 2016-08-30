@@ -72,7 +72,7 @@ void mpu9250_verify()
   }
 }
 
-const float KILO_DIVIDER = 50;
+const float KILO_DIVIDER = 12;
 
 void mpu9250_setup()
 {
@@ -173,10 +173,8 @@ void wifi_connect()
     delay(500);
     Serial.print(".");
   }
-
-  Serial.println("");
-  Serial.print("WiFi connected, ");  
-  Serial.println("IP address: ");
+ 
+  Serial.println("Got IP: ");
   Serial.println(WiFi.localIP());
 }
 
@@ -188,7 +186,9 @@ void setup()
 
   Serial.println("Starting I2C port...");
   Wire.begin();
-  delay(100);
+  delay(500);
+  mpu9250_reset();
+  delay(500);
 
   Serial.println("Checking device ID...");
   mpu9250_verify();
@@ -206,11 +206,19 @@ void setup()
   Serial.println("Starting measurements...");
 }
 
+enum {
+  Pitch = 0,
+  Yaw,
+  Roll
+};
+
 void loop()
 {
   static float gyro[3] = {0.f};
 
   int32_t fifo_size = i2c_read_int16(MPU9250_ADDRESS_MAIN, MPU9250_REG_FIFO_COUNTH)/6; // read FIFO sample count
+
+  Serial.print("FIFO: "); Serial.println(fifo_size);
 
   for (int i = 0; i < fifo_size; i ++)
   {
@@ -235,19 +243,22 @@ void loop()
     } data;
 #pragma pack(pop)
 
-  static float fl = 0.f;
   data.flags = 3;
 
-  for (int i = 0; i < 3; i ++) {
-    data.fl[0 + i] = data.fl[9 + i] = gyro[i] * 0.0174532925;
+  // translate axis, just because. :-)
+  data.fl[0 + Roll] = data.fl[9 + Roll] = gyro[Yaw] * 0.0174532925;
+  data.fl[0 + Pitch] = data.fl[9 + Pitch] = gyro[Roll]  * 0.0174532925;
+  data.fl[0 + Yaw] = data.fl[9 + Yaw] = gyro[Pitch]  * 0.0174532925;
+
+  if (fifo_size > 0)
+  {
+    WiFiUDP udp;
+    udp.beginPacket(IPAddress(192, 168, 0, 102), 5555);
+    udp.write((const uint8_t *)&data, sizeof(data));
+    udp.endPacket();
   }
 
-  WiFiUDP udp;
-  udp.beginPacket(IPAddress(192, 168, 0, 102), 5555);
-  udp.write((const uint8_t *)&data, sizeof(data));
-  udp.endPacket();
-
-  delay(1000);
+  delay(10);
 }
 
 uint8_t i2c_read_reg(uint8_t address, uint8_t reg)
